@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Retro Pete Quest</title>
+<style>
+body {
+  margin: 0;
+  background: black;
+  color: #33ff33;
+  font-family: "Courier New", monospace;
+  overflow: hidden;
+}
+canvas {
+  display: block;
+  margin: auto;
+  background: #000;
+  image-rendering: pixelated;
+}
+#overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.96);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  text-align: center;
+  padding: 20px;
+  z-index: 10;
+}
+input, button {
+  background: black;
+  color: #33ff33;
+  border: 1px solid #33ff33;
+  padding: 10px;
+  font-family: inherit;
+  margin-top: 10px;
+  font-size: 18px;
+}
+pre { text-align: left; }
+</style>
+</head>
+<body>
+
+<canvas id="game" width="800" height="500"></canvas>
+<div id="overlay"></div>
+
+<script>
+/* ================= SETUP ================= */
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+
+const overlay = document.getElementById("overlay");
+let keys = {};
+let paused = false;
+
+document.addEventListener("keydown", e => keys[e.key] = true);
+document.addEventListener("keyup", e => keys[e.key] = false);
+
+/* ================= AUDIO ================= */
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function beep(freq=440, time=0.1) {
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = "square";
+  o.frequency.value = freq;
+  o.connect(g);
+  g.connect(audioCtx.destination);
+  o.start();
+  g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + time);
+  o.stop(audioCtx.currentTime + time);
+}
+
+/* ================= GAME STATE ================= */
+let level = 0;
+let gameOver = false;
+let passwordParts = [];
+
+/* ================= LEVELS ================= */
+const levels = [
+  {
+    name: "Level 1 – Aussie Motors",
+    bg: "G'day mate 🇦🇺",
+    items: ["🇦🇺","🚗","🏎️","🦘"],
+    riddle: "Which command lets you run things as the boss user?",
+    answer: "sudo"
+  },
+  {
+    name: "Level 2 – Scottish Pubs",
+    bg: "Slàinte! 🍺",
+    items: ["🍺","🏴","🥃","🍻"],
+    riddle: "What happens once a year when you level up in real life?",
+    answer: "birthday"
+  },
+  {
+    name: "Level 3 – Bug Extermination",
+    bg: "Debug Mode 💻",
+    items: ["🐞"],
+    riddle: "Who is upgrading his system?",
+    answer: "pete"
+  }
+];
+
+/* ================= PLAYER ================= */
+const pete = {
+  x: 100,
+  y: 100,
+  speed: 3,
+  draw() {
+    ctx.font = "56px Courier New";
+    ctx.fillText("👴", this.x, this.y);
+  }
+};
+
+/* ================= MONSTERS ================= */
+function makeMonster() {
+  return {
+    x: Math.random()*760,
+    y: Math.random()*460,
+    dx: Math.random()>0.5?1.5:-1.5,
+    dy: Math.random()>0.5?1.5:-1.5,
+    draw() {
+      ctx.font = "48px Courier New";
+      ctx.fillText("👾", this.x, this.y);
+    },
+    move() {
+      this.x += this.dx;
+      this.y += this.dy;
+      if (this.x<0||this.x>760) this.dx*=-1;
+      if (this.y<40||this.y>460) this.dy*=-1;
+    }
+  };
+}
+
+let monsters = [];
+let collectibles = [];
+let bugs = [];
+let bullets = [];
+
+/* ================= SHOOTING ================= */
+document.addEventListener("keydown", e => {
+  if (e.key === " " && level === 2 && !paused) {
+    bullets.push({x: pete.x+25, y: pete.y-20});
+    beep(700,0.05);
+  }
+});
+
+/* ================= RIDDLE OVERLAY ================= */
+function showRiddle(data, onSuccess) {
+  paused = true;
+  overlay.style.display = "flex";
+  overlay.innerHTML = `
+    <h2>${data.name} Complete</h2>
+    <p>${data.riddle}</p>
+    <input id="riddleInput" autocomplete="off" />
+    <button id="submitBtn">ENTER</button>
+  `;
+
+  const input = document.getElementById("riddleInput");
+  const btn = document.getElementById("submitBtn");
+  input.focus();
+
+  function submit() {
+    const val = input.value.toLowerCase().trim();
+    if (val === data.answer) {
+      passwordParts.push(val);
+      beep(900);
+      overlay.style.display = "none";
+      paused = false;
+      onSuccess();
+    } else {
+      beep(200);
+    }
+  }
+
+  btn.onclick = submit;
+  input.onkeydown = e => { if (e.key === "Enter") submit(); };
+}
+
+/* ================= LEVEL SETUP ================= */
+function startLevel() {
+  collectibles = [];
+  monsters = [];
+  bugs = [];
+  bullets = [];
+
+  if (level < 2) {
+    for (let i=0;i<8;i++)
+      collectibles.push({
+        x: Math.random()*740,
+        y: Math.random()*440,
+        icon: levels[level].items[Math.floor(Math.random()*levels[level].items.length)]
+      });
+  } else {
+    for (let i=0;i<10;i++)
+      bugs.push({x: Math.random()*740, y: Math.random()*440});
+  }
+
+  for (let i=0;i<level+1;i++) monsters.push(makeMonster());
+}
+
+/* ================= UPDATE ================= */
+function update() {
+  if (gameOver || paused) return;
+
+  if (keys.ArrowUp) pete.y -= pete.speed;
+  if (keys.ArrowDown) pete.y += pete.speed;
+  if (keys.ArrowLeft) pete.x -= pete.speed;
+  if (keys.ArrowRight) pete.x += pete.speed;
+
+  monsters.forEach(m => {
+    m.move();
+    if (Math.abs(m.x-pete.x)<30 && Math.abs(m.y-pete.y)<30) {
+      gameOver = true;
+      paused = true;
+      overlay.innerHTML = "<h1>GAME OVER</h1><p>Defeated by legacy systems 👾</p>";
+      overlay.style.display = "flex";
+    }
+  });
+
+  if (level < 2) {
+    collectibles = collectibles.filter(c => {
+      if (Math.abs(c.x-pete.x)<30 && Math.abs(c.y-pete.y)<30) {
+        beep(600); return false;
+      }
+      return true;
+    });
+    if (!collectibles.length) {
+      showRiddle(levels[level], () => {
+        level++;
+        startLevel();
+      });
+    }
+  } else {
+    bullets.forEach(b => b.y -= 6);
+    bugs = bugs.filter(bug =>
+      !bullets.some(b => Math.abs(b.x-bug.x)<20 && Math.abs(b.y-bug.y)<20)
+    );
+    if (!bugs.length) {
+      showRiddle(levels[level], finalLogin);
+    }
+  }
+}
+
+/* ================= DRAW ================= */
+function draw() {
+  ctx.clearRect(0,0,800,500);
+  ctx.font = "24px Courier New";
+  ctx.fillText(levels[level]?.bg||"",10,30);
+
+  pete.draw();
+
+  collectibles.forEach(c => {
+    ctx.font = "48px Courier New";
+    ctx.fillText(c.icon,c.x,c.y);
+  });
+
+  bugs.forEach(b => {
+    ctx.font="40px Courier New";
+    ctx.fillText("🐞",b.x,b.y);
+  });
+
+  bullets.forEach(b => {
+    ctx.font="32px Courier New";
+    ctx.fillText("💻",b.x,b.y);
+  });
+
+  monsters.forEach(m => m.draw());
+}
+
+/* ================= FINAL LOGIN ================= */
+function finalLogin() {
+  paused = true;
+  overlay.style.display="flex";
+  overlay.innerHTML=`
+<pre>
+login: pete
+password: (hint: 3 words)
+</pre>
+<input id="pw" autocomplete="off"/>
+<button id="loginBtn">LOGIN</button>
+`;
+
+  const input = document.getElementById("pw");
+  const btn = document.getElementById("loginBtn");
+  input.focus();
+
+  btn.onclick = () => {
+    if (input.value.toLowerCase().trim() === passwordParts.join(" ")) {
+      overlay.innerHTML=`
+<pre>
+$ sudo birthday pete --grant-root --age=60
+[sudo] privilege escalation successful
+INFO: Initializing birthday subsystem...
+INFO: Loading beers 🍺
+INFO: Starting engines 🚗
+INFO: Debugging complete
+SUCCESS: Pete upgraded to version 60.0.0
+
+🎉 HAPPY 60TH BIRTHDAY PETE 🎉
+Legend of IT, Cars & Beers
+</pre>`;
+      beep(1000,0.4);
+    } else beep(200);
+  };
+}
+
+/* ================= LOOP ================= */
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+/* ================= START ================= */
+overlay.style.display="flex";
+overlay.innerHTML=`
+<h1>Retro Pete Quest</h1>
+<p>Arrow keys to move</p>
+<p>Space = shoot bugs (Level 3)</p>
+<button id="startBtn">START</button>
+`;
+document.getElementById("startBtn").onclick = () => {
+  overlay.style.display="none";
+  startLevel();
+  loop();
+};
+</script>
+
+</body>
+</html>
